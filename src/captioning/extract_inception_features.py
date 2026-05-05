@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +14,9 @@ DEFAULT_RAW_DIR = REPO_ROOT / "data" / "raw" / "flickr8k"
 DEFAULT_SPLITS_DIR = REPO_ROOT / "artifacts" / "captioning" / "splits"
 DEFAULT_FEATURES_DIR = REPO_ROOT / "artifacts" / "captioning" / "features"
 FEATURE_BASENAME = "inception_v3_flickr8k"
+BATCH_SIZE = 32
+LIMIT: int | None = None
+PREPARE_ONLY = False
 
 
 def build_encoder():
@@ -43,56 +45,34 @@ def inception_preprocess(batch: np.ndarray) -> np.ndarray:
     return preprocess_input(batch)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Prepare Flickr8k splits and extract frozen InceptionV3 features.",
-    )
-    parser.add_argument("--raw-dir", type=Path, default=DEFAULT_RAW_DIR)
-    parser.add_argument("--splits-dir", type=Path, default=DEFAULT_SPLITS_DIR)
-    parser.add_argument("--features-dir", type=Path, default=DEFAULT_FEATURES_DIR)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Optional smoke-test limit for feature extraction.",
-    )
-    parser.add_argument(
-        "--prepare-only",
-        action="store_true",
-        help="Only write split/caption JSON files; skip TensorFlow feature extraction.",
-    )
-    return parser.parse_args()
-
 def main() -> None:
-    args = parse_args()
-    splits = prepare_flickr8k_splits(args.raw_dir, args.splits_dir)
-    if args.prepare_only:
-        print(f"Saved splits and captions: {args.splits_dir}")
+    splits = prepare_flickr8k_splits(DEFAULT_RAW_DIR, DEFAULT_SPLITS_DIR)
+    if PREPARE_ONLY:
+        print(f"Saved splits and captions: {DEFAULT_SPLITS_DIR}")
         return
 
     image_ids = splits["train"] + splits["val"] + splits["test"] + splits["unused"]
-    if args.limit is not None:
-        if args.limit <= 0:
-            raise ValueError("--limit must be greater than 0")
-        image_ids = image_ids[: args.limit]
+    if LIMIT is not None:
+        if LIMIT <= 0:
+            raise ValueError("LIMIT must be greater than 0")
+        image_ids = image_ids[:LIMIT]
 
-    image_paths = [args.raw_dir / "Images" / image_id for image_id in image_ids]
+    image_paths = [DEFAULT_RAW_DIR / "Images" / image_id for image_id in image_ids]
     encoder = build_encoder()
     features = extract_features(
         image_paths=image_paths,
         encoder=encoder,
         target_size=(299, 299),
-        batch_size=args.batch_size,
+        batch_size=BATCH_SIZE,
         normalize=False,
         preprocess_fn=inception_preprocess,
         verbose=0,
     ).astype(np.float32, copy=False)
 
-    suffix = "" if args.limit is None else f"_limit{args.limit}"
-    features_path = args.features_dir / f"{FEATURE_BASENAME}{suffix}_features.npy"
-    image_ids_path = args.features_dir / f"{FEATURE_BASENAME}{suffix}_image_ids.json"
-    metadata_path = args.features_dir / f"{FEATURE_BASENAME}{suffix}_metadata.json"
+    suffix = "" if LIMIT is None else f"_limit{LIMIT}"
+    features_path = DEFAULT_FEATURES_DIR / f"{FEATURE_BASENAME}{suffix}_features.npy"
+    image_ids_path = DEFAULT_FEATURES_DIR / f"{FEATURE_BASENAME}{suffix}_image_ids.json"
+    metadata_path = DEFAULT_FEATURES_DIR / f"{FEATURE_BASENAME}{suffix}_metadata.json"
 
     save_features(features, features_path)
     save_json(image_ids, image_ids_path)

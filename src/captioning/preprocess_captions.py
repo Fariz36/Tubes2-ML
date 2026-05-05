@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import re
 from collections import Counter
@@ -110,30 +109,20 @@ def max_caption_length(captions_by_image: CaptionMap) -> int:
     )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Clean Flickr8k captions, build train vocabulary, and encode captions.",
-    )
-    parser.add_argument("--splits-dir", type=Path, default=DEFAULT_SPLITS_DIR)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    train_captions = load_caption_map(args.splits_dir / "train_captions.json")
+    train_captions = load_caption_map(DEFAULT_SPLITS_DIR / "train_captions.json")
     word_to_idx, idx_to_word = build_vocabulary(train_captions)
     max_len = max_caption_length(train_captions)
     pad_idx = word_to_idx[PAD_TOKEN]
     end_idx = word_to_idx[END_TOKEN]
 
-    save_json(word_to_idx, args.output_dir / "word_to_idx.json")
-    save_json(idx_to_word, args.output_dir / "idx_to_word.json")
+    save_json(word_to_idx, DEFAULT_OUTPUT_DIR / "word_to_idx.json")
+    save_json(idx_to_word, DEFAULT_OUTPUT_DIR / "idx_to_word.json")
 
     split_counts: dict[str, int] = {}
     truncated_counts: dict[str, int] = {}
     for split_name in ("train", "val", "test"):
-        captions = load_caption_map(args.splits_dir / f"{split_name}_captions.json")
+        captions = load_caption_map(DEFAULT_SPLITS_DIR / f"{split_name}_captions.json")
         encoded = encode_caption_map(captions, word_to_idx)
         padded, truncated_count = pad_caption_map(
             encoded,
@@ -141,8 +130,8 @@ def main() -> None:
             pad_idx=pad_idx,
             end_idx=end_idx,
         )
-        save_json(encoded, args.output_dir / f"{split_name}_encoded_captions.json")
-        save_json(padded, args.output_dir / f"{split_name}_padded_captions.json")
+        save_json(encoded, DEFAULT_OUTPUT_DIR / f"{split_name}_encoded_captions.json")
+        save_json(padded, DEFAULT_OUTPUT_DIR / f"{split_name}_padded_captions.json")
         split_counts[split_name] = sum(len(items) for items in encoded.values())
         truncated_counts[split_name] = truncated_count
 
@@ -159,10 +148,10 @@ def main() -> None:
             "split_caption_counts": split_counts,
             "truncated_caption_counts": truncated_counts,
         },
-        args.output_dir / "caption_preprocessing_metadata.json",
+        DEFAULT_OUTPUT_DIR / "caption_preprocessing_metadata.json",
     )
 
-    print(f"Saved caption preprocessing artifacts: {args.output_dir}")
+    print(f"Saved caption preprocessing artifacts: {DEFAULT_OUTPUT_DIR}")
     print(f"Vocabulary size: {len(word_to_idx)}")
 
 
