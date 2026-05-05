@@ -7,4 +7,3 @@ Letakkan dataset lokal di sini.
 - `data/processed/cnn/`: data hasil preprocessing CNN.
 - `data/processed/captioning/`: data hasil preprocessing captioning.
 
-Isi folder dataset dan processed data tidak di-commit.

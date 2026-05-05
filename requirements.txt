@@ -4,3 +4,6 @@ pillow
 scikit-learn
 matplotlib
 nltk
+pandas
+tqdm
+jupyter
