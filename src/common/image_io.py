@@ -23,7 +23,7 @@ def load_image(
     height, width = target_size
 
     with Image.open(path) as image:
-        image = image.convert("rgb")
+        image = image.convert("RGB")
         image = image.resize((width, height), Image.Resampling.BILINEAR)
         array = np.asarray(image, dtype=dtype)
 
