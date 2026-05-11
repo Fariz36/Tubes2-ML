@@ -18,9 +18,11 @@ UNK_TOKEN = "<unk>"
 SPECIAL_TOKENS = [PAD_TOKEN, START_TOKEN, END_TOKEN, UNK_TOKEN]
 
 
+# captionnya cuma di-preprocess biar consist of english letter + space doang sih (sama semuanya jadi lower letter)
+# kalau yang di geeksforgeeks dia ngelakuinnya gak di lower, underscore masih persist soalnya pakai \w
 def clean_caption(caption: str) -> list[str]:
     text = caption.lower()
-    text = re.sub(r"[^a-z\s]", " ", text)
+    text = re.sub(r"[^a-z\s]", " ", text) 
     text = re.sub(r"\s+", " ", text).strip()
     return text.split() if text else []
 
