@@ -24,6 +24,8 @@ data/raw/*
 data/processed/*
 !data/README.md
 !data/raw/.gitkeep
+!data/raw/flickr8k/.gitkeep
+!data/raw/intel/.gitkeep
 !data/processed/.gitkeep
 !data/processed/cnn/
 !data/processed/cnn/.gitkeep
@@ -35,6 +37,7 @@ artifacts/weights/*
 artifacts/histories/*
 artifacts/predictions/*
 artifacts/plots/*
+artifacts/captioning/*
 !artifacts/README.md
 !artifacts/features/.gitkeep
 !artifacts/weights/.gitkeep
