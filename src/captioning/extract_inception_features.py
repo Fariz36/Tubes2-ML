@@ -28,6 +28,7 @@ def build_encoder():
             "Install dependencies with: pip install -r requirements.txt"
         ) from error
 
+    # agak beda sama kalau misal yang di example geeksforgeeks, soalnya kalau di geeksforgeeks dia ga ngasih params include_top=False, jadi dia basically tetep ngelakuin predict using the inception model. Kemarin tanya tanya sama gemini sama gpt sih katanya gak efisien, mending langsung pake include_top=True, jadi yaudah gw pake aja ini
     encoder = InceptionV3(weights="imagenet", include_top=False, pooling="avg")
     encoder.trainable = False
     return encoder
