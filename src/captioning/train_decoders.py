@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+from tqdm import tqdm
+from tqdm.keras import TqdmCallback
 
 from captioning.decoder import build_lstm_decoder, build_simple_rnn_decoder
 
@@ -178,6 +180,7 @@ def train_experiment(
         validation_data=(val_x, val_y),
         epochs=epochs,
         batch_size=batch_size,
+        verbose=1
     )
     elapsed_seconds = time.perf_counter() - started_at
 
@@ -244,7 +247,7 @@ def main() -> None:
 
     metadata = load_training_metadata(DEFAULT_PREPROCESSED_DIR, DEFAULT_TEACHER_FORCING_DIR)
     summaries = []
-    for config in configs:
+    for config in tqdm(configs, desc="Training decoder experiments", unit="experiment"):
         print(f"Training {config.experiment_id}")
         summaries.append(
             train_experiment(
