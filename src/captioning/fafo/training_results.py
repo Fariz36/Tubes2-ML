@@ -7,6 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -22,6 +23,7 @@ PREPROCESSED_DIR = REPO_ROOT / "artifacts" / "captioning" / "preprocessed"
 TEACHER_FORCING_DIR = REPO_ROOT / "artifacts" / "captioning" / "teacher_forcing"
 SPLITS_DIR = REPO_ROOT / "artifacts" / "captioning" / "splits"
 FAFO_OUTPUT_DIR = REPO_ROOT / "artifacts" / "captioning" / "fafo"
+IMAGES_DIR = REPO_ROOT / "data" / "raw" / "flickr8k" / "Images"
 
 SUMMARY_PATH = EXPERIMENT_DIR / "decoder_training_summary.json"
 FEATURE_BASENAME = "inception_v3_flickr8k"
@@ -167,6 +169,42 @@ def greedy_decode(model, feature: np.ndarray, word_to_idx: dict[str, int], idx_t
     return " ".join(generated) if generated else "<empty>"
 
 
+def show_inference_examples(
+    examples: list[tuple[str, str, list[str]]],
+    experiment_id: str,
+    split: str,
+) -> Path:
+    fig = plt.figure(figsize=(13, max(4, 3.2 * len(examples))))
+    for row, (image_id, prediction, ground_truths) in enumerate(examples, start=1):
+        image_ax = fig.add_subplot(len(examples), 2, (row - 1) * 2 + 1)
+        image_ax.set_title(image_id)
+        image_ax.set_xticks([])
+        image_ax.set_yticks([])
+
+        image_path = IMAGES_DIR / image_id
+        if image_path.exists():
+            with Image.open(image_path) as image:
+                image_ax.imshow(image.convert("RGB"))
+        else:
+            image_ax.text(0.5, 0.5, "Missing image file", ha="center", va="center")
+
+        text_ax = fig.add_subplot(len(examples), 2, (row - 1) * 2 + 2)
+        text_ax.axis("off")
+        caption_text = "Predicted:\n"
+        caption_text += f"{prediction}\n\nGround truth:\n"
+        caption_text += "\n".join(f"- {caption}" for caption in ground_truths)
+        text_ax.text(0, 1, caption_text, va="top", wrap=True, fontsize=10)
+
+    fig.suptitle(f"Greedy Inference Examples: {experiment_id} ({split})")
+    fig.tight_layout()
+
+    FAFO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = FAFO_OUTPUT_DIR / f"{experiment_id}_{split}_inference_examples.png"
+    fig.savefig(output_path, dpi=160)
+    plt.show()
+    return output_path
+
+
 def run_inference(summary: list[dict[str, object]], experiment_id: str, split: str, count: int) -> None:
     row = find_summary_row(summary, experiment_id)
     model = build_model_from_summary(row)
@@ -184,14 +222,20 @@ def run_inference(summary: list[dict[str, object]], experiment_id: str, split: s
     max_steps = int(load_json(TEACHER_FORCING_DIR / "teacher_forcing_metadata.json")["decoder_timesteps"])
 
     print(f"\nGreedy inference with {experiment_id} on {split} split")
+    examples: list[tuple[str, str, list[str]]] = []
     for image_id in list(captions)[:count]:
         feature = features[image_id_to_index[image_id]]
         prediction = greedy_decode(model, feature, word_to_idx, idx_to_word, max_steps)
+        ground_truths = [str(caption) for caption in captions[image_id]]
+        examples.append((image_id, prediction, ground_truths))
         print(f"\nImage: {image_id}")
         print(f"Predicted: {prediction}")
         print("Ground truth:")
-        for caption in captions[image_id]:
+        for caption in ground_truths:
             print(f"- {caption}")
+
+    output_path = show_inference_examples(examples, experiment_id, split)
+    print(f"Saved inference examples plot: {output_path}")
 
 
 def parse_args() -> argparse.Namespace:
