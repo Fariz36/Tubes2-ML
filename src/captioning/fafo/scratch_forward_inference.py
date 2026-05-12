@@ -6,10 +6,9 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from captioning.fafo.training_results import FAFO_OUTPUT_DIR, score_caption
+from captioning.fafo.training_results import EVAL_BATCH_SIZE, FAFO_OUTPUT_DIR, greedy_decode_batch, score_caption
 from captioning.scratch_decoder import (
     SELECTED_EXPERIMENTS,
-    keras_greedy_decode,
     load_feature_inputs,
     load_keras_model,
     load_scratch_decoder,
@@ -25,27 +24,37 @@ def compare_inference(experiment_id: str, split: str, count: int | None) -> Path
         raise ValueError(f"No images selected for split={split!r} and count={count!r}")
 
     rows = []
-    for image_id in tqdm(selected_image_ids, desc=f"Comparing {experiment_id}", unit="image"):
-        feature = features[image_id_to_index[image_id]]
-        ground_truths = [str(caption) for caption in captions[image_id]]
-        keras_prediction = keras_greedy_decode(keras_model, feature, scratch_decoder)
-        scratch_prediction = scratch_decoder.greedy_decode(feature)
-        keras_bleu4, keras_meteor = score_caption(keras_prediction, ground_truths)
-        scratch_bleu4, scratch_meteor = score_caption(scratch_prediction, ground_truths)
+    for start in tqdm(range(0, len(selected_image_ids), EVAL_BATCH_SIZE), desc=f"Comparing {experiment_id}", unit="batch"):
+        batch_image_ids = selected_image_ids[start:start + EVAL_BATCH_SIZE]
+        feature_indices = [image_id_to_index[image_id] for image_id in batch_image_ids]
+        feature_batch = features[feature_indices]
+        keras_predictions = greedy_decode_batch(
+            keras_model,
+            feature_batch,
+            scratch_decoder.word_to_idx,
+            scratch_decoder.idx_to_word,
+            scratch_decoder.max_steps,
+        )
+        scratch_predictions = scratch_decoder.greedy_decode_batch(feature_batch)
 
-        row = {
-            "image_id": image_id,
-            "keras_prediction": keras_prediction,
-            "scratch_prediction": scratch_prediction,
-            "match": keras_prediction == scratch_prediction,
-            "keras_bleu4": keras_bleu4,
-            "keras_meteor": keras_meteor,
-            "scratch_bleu4": scratch_bleu4,
-            "scratch_meteor": scratch_meteor,
-            "ground_truths": " | ".join(ground_truths),
-        }
-        rows.append(row)
-        print_example(row, ground_truths)
+        for image_id, keras_prediction, scratch_prediction in zip(batch_image_ids, keras_predictions, scratch_predictions, strict=True):
+            ground_truths = [str(caption) for caption in captions[image_id]]
+            keras_bleu4, keras_meteor = score_caption(keras_prediction, ground_truths)
+            scratch_bleu4, scratch_meteor = score_caption(scratch_prediction, ground_truths)
+
+            row = {
+                "image_id": image_id,
+                "keras_prediction": keras_prediction,
+                "scratch_prediction": scratch_prediction,
+                "match": keras_prediction == scratch_prediction,
+                "keras_bleu4": keras_bleu4,
+                "keras_meteor": keras_meteor,
+                "scratch_bleu4": scratch_bleu4,
+                "scratch_meteor": scratch_meteor,
+                "ground_truths": " | ".join(ground_truths),
+            }
+            rows.append(row)
+            print_example(row, ground_truths)
 
     print_summary(rows)
 

@@ -84,6 +84,55 @@ class ScratchDecoder:
 
         return " ".join(generated) if generated else "<empty>"
 
+    def forward_batch(self, feature_batch: np.ndarray, tokens: np.ndarray) -> np.ndarray:
+        projected_image = np.tanh(feature_batch @ self.image_projection.kernel + self.image_projection.bias)
+        token_embeddings = self.token_embedding[tokens]
+        x = np.concatenate([projected_image[:, None, :], token_embeddings], axis=1)
+
+        for weights in self.recurrent_layers:
+            if self.model_kind == "rnn":
+                x = simple_rnn_forward_batch(x, weights)
+            elif self.model_kind == "lstm":
+                x = lstm_forward_batch(x, weights)
+            else:
+                raise ValueError(f"Unsupported model_kind: {self.model_kind}")
+
+        caption_steps = x[:, 1:, :]
+        logits = caption_steps @ self.token_distribution.kernel + self.token_distribution.bias
+        return softmax(logits)
+
+    def greedy_decode_batch(self, feature_batch: np.ndarray) -> list[str]:
+        pad_idx = self.word_to_idx["<pad>"]
+        start_idx = self.word_to_idx["<start>"]
+        end_idx = self.word_to_idx["<end>"]
+        batch_size = feature_batch.shape[0]
+        tokens = np.full((batch_size, self.max_steps), pad_idx, dtype=np.int32)
+        tokens[:, 0] = start_idx
+        generated: list[list[str]] = [[] for _ in range(batch_size)]
+        finished = np.zeros((batch_size,), dtype=bool)
+
+        for step in range(self.max_steps):
+            predictions = self.forward_batch(feature_batch, tokens)
+            next_indices = np.argmax(predictions[:, step, :], axis=1).astype(np.int32)
+
+            for row_index, next_idx in enumerate(next_indices):
+                if finished[row_index]:
+                    continue
+                if next_idx == end_idx:
+                    finished[row_index] = True
+                    continue
+
+                word = self.idx_to_word.get(str(int(next_idx)), "<unk>")
+                if word not in {"<pad>", "<start>", "<unk>"}:
+                    generated[row_index].append(word)
+                if step + 1 < self.max_steps:
+                    tokens[row_index, step + 1] = next_idx
+
+            if finished.all():
+                break
+
+        return [" ".join(words) if words else "<empty>" for words in generated]
+
 
 def simple_rnn_forward(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
     hidden_units = weights.recurrent_kernel.shape[0]
@@ -93,6 +142,17 @@ def simple_rnn_forward(sequence: np.ndarray, weights: RecurrentWeights) -> np.nd
         hidden = np.tanh(timestep @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias)
         outputs.append(hidden)
     return np.stack(outputs, axis=0)
+
+
+def simple_rnn_forward_batch(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
+    batch_size = sequence.shape[0]
+    hidden_units = weights.recurrent_kernel.shape[0]
+    hidden = np.zeros((batch_size, hidden_units), dtype=np.float32)
+    outputs = []
+    for step in range(sequence.shape[1]):
+        hidden = np.tanh(sequence[:, step, :] @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias)
+        outputs.append(hidden)
+    return np.stack(outputs, axis=1)
 
 
 def lstm_forward(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
@@ -111,6 +171,25 @@ def lstm_forward(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
         hidden = output_gate * np.tanh(cell)
         outputs.append(hidden)
     return np.stack(outputs, axis=0)
+
+
+def lstm_forward_batch(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
+    batch_size = sequence.shape[0]
+    hidden_units = weights.recurrent_kernel.shape[0]
+    hidden = np.zeros((batch_size, hidden_units), dtype=np.float32)
+    cell = np.zeros((batch_size, hidden_units), dtype=np.float32)
+    outputs = []
+    for step in range(sequence.shape[1]):
+        gates = sequence[:, step, :] @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias
+        input_gate, forget_gate, cell_candidate, output_gate = np.split(gates, 4, axis=1)
+        input_gate = sigmoid(input_gate)
+        forget_gate = sigmoid(forget_gate)
+        cell_candidate = np.tanh(cell_candidate)
+        output_gate = sigmoid(output_gate)
+        cell = forget_gate * cell + input_gate * cell_candidate
+        hidden = output_gate * np.tanh(cell)
+        outputs.append(hidden)
+    return np.stack(outputs, axis=1)
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
