@@ -29,6 +29,7 @@ IMAGES_DIR = REPO_ROOT / "data" / "raw" / "flickr8k" / "Images"
 
 SUMMARY_PATH = EXPERIMENT_DIR / "decoder_training_summary.json"
 FEATURE_BASENAME = "inception_v3_flickr8k"
+EVAL_BATCH_SIZE = 256
 METEOR_READY = False
 
 
@@ -197,6 +198,45 @@ def greedy_decode(model, feature: np.ndarray, word_to_idx: dict[str, int], idx_t
     return " ".join(generated) if generated else "<empty>"
 
 
+def greedy_decode_batch(
+    model,
+    feature_batch: np.ndarray,
+    word_to_idx: dict[str, int],
+    idx_to_word: dict[str, str],
+    max_steps: int,
+) -> list[str]:
+    pad_idx = word_to_idx["<pad>"]
+    start_idx = word_to_idx["<start>"]
+    end_idx = word_to_idx["<end>"]
+    batch_size = feature_batch.shape[0]
+    tokens = np.full((batch_size, max_steps), pad_idx, dtype=np.int32)
+    tokens[:, 0] = start_idx
+    generated: list[list[str]] = [[] for _ in range(batch_size)]
+    finished = np.zeros((batch_size,), dtype=bool)
+
+    for step in range(max_steps):
+        predictions = model.predict([feature_batch, tokens], batch_size=batch_size, verbose=0)
+        next_indices = np.argmax(predictions[:, step, :], axis=1).astype(np.int32)
+
+        for row_index, next_idx in enumerate(next_indices):
+            if finished[row_index]:
+                continue
+            if next_idx == end_idx:
+                finished[row_index] = True
+                continue
+
+            word = idx_to_word.get(str(int(next_idx)), "<unk>")
+            if word not in {"<pad>", "<start>", "<unk>"}:
+                generated[row_index].append(word)
+            if step + 1 < max_steps:
+                tokens[row_index, step + 1] = next_idx
+
+        if finished.all():
+            break
+
+    return [" ".join(words) if words else "<empty>" for words in generated]
+
+
 def score_caption(prediction: str, ground_truths: list[str]) -> tuple[float, float]:
     ensure_meteor_resources()
     predicted_tokens = prediction.split()
@@ -319,18 +359,20 @@ def evaluate_experiment(
         raise ValueError(f"No images selected for split={split!r} and eval_count={eval_count!r}")
 
     warmup_feature = features[image_id_to_index[selected_image_ids[0]]]
-    greedy_decode(model, warmup_feature, word_to_idx, idx_to_word, max_steps)
+    greedy_decode_batch(model, warmup_feature[None, :], word_to_idx, idx_to_word, max_steps)
 
     start_time = time.perf_counter()
     bleu_scores: list[float] = []
     meteor_scores: list[float] = []
-    for image_id in selected_image_ids:
-        feature = features[image_id_to_index[image_id]]
-        prediction = greedy_decode(model, feature, word_to_idx, idx_to_word, max_steps)
-        ground_truths = [str(caption) for caption in captions[image_id]]
-        bleu4, meteor = score_caption(prediction, ground_truths)
-        bleu_scores.append(bleu4)
-        meteor_scores.append(meteor)
+    for start in tqdm(range(0, len(selected_image_ids), EVAL_BATCH_SIZE), desc=str(row["experiment_id"]), unit="batch", leave=False):
+        batch_image_ids = selected_image_ids[start:start + EVAL_BATCH_SIZE]
+        feature_indices = [image_id_to_index[image_id] for image_id in batch_image_ids]
+        predictions = greedy_decode_batch(model, features[feature_indices], word_to_idx, idx_to_word, max_steps)
+        for image_id, prediction in zip(batch_image_ids, predictions, strict=True):
+            ground_truths = [str(caption) for caption in captions[image_id]]
+            bleu4, meteor = score_caption(prediction, ground_truths)
+            bleu_scores.append(bleu4)
+            meteor_scores.append(meteor)
 
     elapsed_seconds = time.perf_counter() - start_time
     return {
