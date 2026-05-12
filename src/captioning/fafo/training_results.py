@@ -12,6 +12,7 @@ import numpy as np
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
 from nltk.translate.meteor_score import meteor_score
 from PIL import Image
+from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 from captioning.preprocess_captions import clean_caption
@@ -368,8 +369,7 @@ def print_evaluation_table(rows: list[dict[str, object]]) -> None:
 def run_evaluation_table(summary: list[dict[str, object]], split: str, eval_count: int | None) -> Path:
     selected = sorted(summary, key=lambda row: float(row["final_val_loss"]))
     rows = []
-    for index, row in enumerate(selected, start=1):
-        print(f"Evaluating {index}/{len(selected)}: {row['experiment_id']}")
+    for row in tqdm(selected, desc="Evaluating models", unit="model"):
         rows.append(evaluate_experiment(row, split, eval_count))
 
     print_evaluation_table(rows)
