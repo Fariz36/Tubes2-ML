@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import nltk
 import numpy as np
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
 from nltk.translate.meteor_score import meteor_score
@@ -25,6 +28,7 @@ IMAGES_DIR = REPO_ROOT / "data" / "raw" / "flickr8k" / "Images"
 
 SUMMARY_PATH = EXPERIMENT_DIR / "decoder_training_summary.json"
 FEATURE_BASENAME = "inception_v3_flickr8k"
+METEOR_READY = False
 
 
 def load_json(path: str | Path):
@@ -144,6 +148,31 @@ def build_model_from_summary(row: dict[str, object]):
     )
 
 
+def ensure_meteor_resources() -> None:
+    global METEOR_READY
+    if METEOR_READY:
+        return
+
+    try:
+        nltk.data.find("corpora/wordnet")
+    except LookupError:
+        nltk.download("wordnet", quiet=True)
+
+    try:
+        nltk.data.find("corpora/omw-1.4")
+    except LookupError:
+        nltk.download("omw-1.4", quiet=True)
+
+    try:
+        meteor_score([["dog"]], ["canine"])
+    except LookupError as exc:
+        raise RuntimeError(
+            "METEOR needs NLTK WordNet data. Run: python -m nltk.downloader wordnet omw-1.4"
+        ) from exc
+
+    METEOR_READY = True
+
+
 def greedy_decode(model, feature: np.ndarray, word_to_idx: dict[str, int], idx_to_word: dict[str, str], max_steps: int) -> str:
     pad_idx = word_to_idx["<pad>"]
     start_idx = word_to_idx["<start>"]
@@ -167,7 +196,8 @@ def greedy_decode(model, feature: np.ndarray, word_to_idx: dict[str, int], idx_t
     return " ".join(generated) if generated else "<empty>"
 
 
-def score_caption(prediction: str, ground_truths: list[str]) -> tuple[float, float | None]:
+def score_caption(prediction: str, ground_truths: list[str]) -> tuple[float, float]:
+    ensure_meteor_resources()
     predicted_tokens = prediction.split()
     reference_tokens = [clean_caption(caption) for caption in ground_truths]
     if not predicted_tokens:
@@ -180,17 +210,26 @@ def score_caption(prediction: str, ground_truths: list[str]) -> tuple[float, flo
         weights=(0.25, 0.25, 0.25, 0.25),
         smoothing_function=smoothing,
     )
-    try:
-        meteor = meteor_score(reference_tokens, predicted_tokens)
-    except LookupError:
-        meteor = None
-    return float(bleu4), None if meteor is None else float(meteor)
+    meteor = meteor_score(reference_tokens, predicted_tokens)
+    return float(bleu4), float(meteor)
+
+
+def load_inference_inputs(split: str) -> tuple[np.ndarray, dict[str, int], dict[str, list[str]], dict[str, int], dict[str, str], int]:
+    features = np.load(FEATURE_DIR / f"{FEATURE_BASENAME}_features.npy").astype("float32", copy=False)
+    image_ids = load_json(FEATURE_DIR / f"{FEATURE_BASENAME}_image_ids.json")
+    image_id_to_index = {image_id: index for index, image_id in enumerate(image_ids)}
+    captions = load_json(SPLITS_DIR / f"{split}_captions.json")
+    word_to_idx = {str(word): int(index) for word, index in load_json(PREPROCESSED_DIR / "word_to_idx.json").items()}
+    idx_to_word = {str(index): str(word) for index, word in load_json(PREPROCESSED_DIR / "idx_to_word.json").items()}
+    max_steps = int(load_json(TEACHER_FORCING_DIR / "teacher_forcing_metadata.json")["decoder_timesteps"])
+    return features, image_id_to_index, captions, word_to_idx, idx_to_word, max_steps
 
 
 def show_inference_examples(
-    examples: list[tuple[str, str, list[str], float, float | None]],
+    examples: list[tuple[str, str, list[str], float, float]],
     experiment_id: str,
     split: str,
+    show: bool,
 ) -> Path:
     fig = plt.figure(figsize=(13, max(4, 3.2 * len(examples))))
     for row, (image_id, prediction, ground_truths, bleu4, meteor) in enumerate(examples, start=1):
@@ -211,8 +250,7 @@ def show_inference_examples(
         caption_text = "Predicted:\n"
         caption_text += f"{prediction}\n\nGround truth:\n"
         caption_text += "\n".join(f"- {caption}" for caption in ground_truths)
-        meteor_text = "n/a" if meteor is None else f"{meteor:.4f}"
-        caption_text += f"\n\nScores:\nBLEU-4: {bleu4:.4f}\nMETEOR: {meteor_text}"
+        caption_text += f"\n\nScores:\nBLEU-4: {bleu4:.4f}\nMETEOR: {meteor:.4f}"
         text_ax.text(0, 1, caption_text, va="top", wrap=True, fontsize=10)
 
     fig.suptitle(f"Greedy Inference Examples: {experiment_id} ({split})")
@@ -221,11 +259,14 @@ def show_inference_examples(
     FAFO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_path = FAFO_OUTPUT_DIR / f"{experiment_id}_{split}_inference_examples.png"
     fig.savefig(output_path, dpi=160)
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
     return output_path
 
 
-def run_inference(summary: list[dict[str, object]], experiment_id: str, split: str, count: int) -> None:
+def run_inference(summary: list[dict[str, object]], experiment_id: str, split: str, count: int, show: bool) -> None:
     row = find_summary_row(summary, experiment_id)
     model = build_model_from_summary(row)
     weights_path = resolve_artifact_path(str(row["weights_file"]))
@@ -233,16 +274,10 @@ def run_inference(summary: list[dict[str, object]], experiment_id: str, split: s
         weights_path = MODEL_DIR / f"{experiment_id}.weights.h5"
     model.load_weights(weights_path)
 
-    features = np.load(FEATURE_DIR / f"{FEATURE_BASENAME}_features.npy").astype("float32", copy=False)
-    image_ids = load_json(FEATURE_DIR / f"{FEATURE_BASENAME}_image_ids.json")
-    image_id_to_index = {image_id: index for index, image_id in enumerate(image_ids)}
-    captions = load_json(SPLITS_DIR / f"{split}_captions.json")
-    word_to_idx = {str(word): int(index) for word, index in load_json(PREPROCESSED_DIR / "word_to_idx.json").items()}
-    idx_to_word = {str(index): str(word) for index, word in load_json(PREPROCESSED_DIR / "idx_to_word.json").items()}
-    max_steps = int(load_json(TEACHER_FORCING_DIR / "teacher_forcing_metadata.json")["decoder_timesteps"])
+    features, image_id_to_index, captions, word_to_idx, idx_to_word, max_steps = load_inference_inputs(split)
 
-    print(f"\nGreedy inference with {experiment_id} on {split} split")
-    examples: list[tuple[str, str, list[str], float, float | None]] = []
+    print(f"\Inference with {experiment_id} on {split} split")
+    examples: list[tuple[str, str, list[str], float, float]] = []
     for image_id in list(captions)[:count]:
         feature = features[image_id_to_index[image_id]]
         prediction = greedy_decode(model, feature, word_to_idx, idx_to_word, max_steps)
@@ -251,8 +286,7 @@ def run_inference(summary: list[dict[str, object]], experiment_id: str, split: s
         examples.append((image_id, prediction, ground_truths, bleu4, meteor))
         print(f"\nImage: {image_id}")
         print(f"Predicted: {prediction}")
-        meteor_text = "n/a" if meteor is None else f"{meteor:.4f}"
-        print(f"Scores: BLEU-4={bleu4:.4f}, METEOR={meteor_text}")
+        print(f"Scores: BLEU-4={bleu4:.4f}, METEOR={meteor:.4f}")
         print("Ground truth:")
         for caption in ground_truths:
             print(f"- {caption}")
@@ -261,40 +295,112 @@ def run_inference(summary: list[dict[str, object]], experiment_id: str, split: s
     meteor_scores = [example[4] for example in examples if example[4] is not None]
     print("\nSample inference score summary")
     print(f"Mean BLEU-4: {sum(bleu_scores) / len(bleu_scores):.4f}")
-    if meteor_scores:
-        print(f"Mean METEOR: {sum(meteor_scores) / len(meteor_scores):.4f}")
-    else:
-        print("Mean METEOR: n/a; NLTK WordNet data may be missing")
+    print(f"Mean METEOR: {sum(meteor_scores) / len(meteor_scores):.4f}")
 
-    output_path = show_inference_examples(examples, experiment_id, split)
+    output_path = show_inference_examples(examples, experiment_id, split, show)
     print(f"Saved inference examples plot: {output_path}")
+
+
+def evaluate_experiment(
+    row: dict[str, object],
+    split: str,
+    eval_count: int | None,
+) -> dict[str, object]:
+    model = build_model_from_summary(row)
+    weights_path = resolve_artifact_path(str(row["weights_file"]))
+    if not weights_path.exists():
+        weights_path = MODEL_DIR / f"{row['experiment_id']}.weights.h5"
+    model.load_weights(weights_path)
+
+    features, image_id_to_index, captions, word_to_idx, idx_to_word, max_steps = load_inference_inputs(split)
+    selected_image_ids = list(captions)[:eval_count]
+    if not selected_image_ids:
+        raise ValueError(f"No images selected for split={split!r} and eval_count={eval_count!r}")
+
+    warmup_feature = features[image_id_to_index[selected_image_ids[0]]]
+    greedy_decode(model, warmup_feature, word_to_idx, idx_to_word, max_steps)
+
+    start_time = time.perf_counter()
+    bleu_scores: list[float] = []
+    meteor_scores: list[float] = []
+    for image_id in selected_image_ids:
+        feature = features[image_id_to_index[image_id]]
+        prediction = greedy_decode(model, feature, word_to_idx, idx_to_word, max_steps)
+        ground_truths = [str(caption) for caption in captions[image_id]]
+        bleu4, meteor = score_caption(prediction, ground_truths)
+        bleu_scores.append(bleu4)
+        meteor_scores.append(meteor)
+
+    elapsed_seconds = time.perf_counter() - start_time
+    return {
+        "experiment_id": row["experiment_id"],
+        "model_kind": row["model_kind"],
+        "recurrent_layers": row["recurrent_layers"],
+        "hidden_units": row["hidden_units"],
+        "images": len(selected_image_ids),
+        "bleu4": sum(bleu_scores) / len(bleu_scores),
+        "meteor": sum(meteor_scores) / len(meteor_scores),
+        "inference_seconds": elapsed_seconds,
+        "seconds_per_image": elapsed_seconds / len(selected_image_ids),
+    }
+
+
+def print_evaluation_table(rows: list[dict[str, object]]) -> None:
+    ranked = sorted(rows, key=lambda row: float(row["bleu4"]), reverse=True)
+    print("\Evaluation ranking by BLEU-4")
+    print("rank | experiment_id              | kind | layers | hidden | images | BLEU-4 | METEOR | seconds | sec/img")
+    print("-----+----------------------------+------+--------+--------+--------+--------+--------+---------+--------")
+    for rank, row in enumerate(ranked, start=1):
+        print(
+            f"{rank:>4} | "
+            f"{str(row['experiment_id']):<26} | "
+            f"{str(row['model_kind']):<4} | "
+            f"{int(row['recurrent_layers']):>6} | "
+            f"{int(row['hidden_units']):>6} | "
+            f"{int(row['images']):>6} | "
+            f"{float(row['bleu4']):>6.4f} | "
+            f"{float(row['meteor']):>6.4f} | "
+            f"{float(row['inference_seconds']):>7.1f} | "
+            f"{float(row['seconds_per_image']):>6.3f}"
+        )
+
+
+def run_evaluation_table(summary: list[dict[str, object]], split: str, eval_count: int | None) -> Path:
+    selected = sorted(summary, key=lambda row: float(row["final_val_loss"]))
+    rows = []
+    for index, row in enumerate(selected, start=1):
+        print(f"Evaluating {index}/{len(selected)}: {row['experiment_id']}")
+        rows.append(evaluate_experiment(row, split, eval_count))
+
+    print_evaluation_table(rows)
+
+    FAFO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = "full" if eval_count is None else str(eval_count)
+    output_path = FAFO_OUTPUT_DIR / f"{split}_evaluation_{suffix}_images.csv"
+    with output_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return output_path
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="FAFO inspection for trained captioning decoders."
+        description="Test to see the result of keras captioning decoders."
     )
-    parser.add_argument("--experiment-id", help="Experiment to plot/infer. Defaults to best final validation loss.")
-    parser.add_argument("--split", default="test", choices=("train", "val", "test"), help="Split used for inference examples.")
-    parser.add_argument("--count", type=int, default=5, help="Number of image examples for greedy inference.")
-    parser.add_argument("--no-plot", action="store_true", help="Skip loss plot generation.")
-    parser.add_argument("--no-infer", action="store_true", help="Skip greedy inference examples.")
-    parser.add_argument("--show", action="store_true", help="Show matplotlib windows in addition to saving plots.")
+    parser.add_argument("--eval-table", action="store_true", help="Evaluate every trained model and save a BLEU-4/METEOR table.")
+    parser.add_argument("--eval-count", type=int, help="Limit evaluation table to the first N images. Defaults to the full split.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     summary = load_summary()
-    experiment_id = args.experiment_id or best_experiment_id(summary)
 
     print_training_summary(summary)
-    print(f"\nSelected experiment for detailed FAFO: {experiment_id}")
-    if not args.no_plot:
-        plot_path = plot_histories(summary, args.experiment_id, args.show)
-        print(f"Saved loss plot: {plot_path}")
-    if not args.no_infer:
-        run_inference(summary, experiment_id, args.split, args.count)
+    if args.eval_table:
+        table_path = run_evaluation_table(summary, "test", args.eval_count)
+        print(f"Saved evaluation table: {table_path}")
 
 
 if __name__ == "__main__":

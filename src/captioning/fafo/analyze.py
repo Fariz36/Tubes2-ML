@@ -196,11 +196,11 @@ def print_oov_summary(captions_by_image: dict[str, list[str]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Human-facing checks for Flickr8k caption preprocessing."
+        description="Checks for Flickr8k caption preprocessing."
     )
     parser.add_argument(
         "--image-id",
-        help="Show the pairing visualization for one specific image, for example 1000268201_693b08cb0e.jpg.",
+        help="Show visualization for one specific image, for example 1000268201_693b08cb0e.jpg.",
     )
     parser.add_argument("--original", action="store_true", help="Show original captions together with post-processed captions.")
     return parser.parse_args()
