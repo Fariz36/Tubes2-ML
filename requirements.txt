@@ -7,3 +7,4 @@ nltk
 pandas
 tqdm
 jupyter
+h5py
