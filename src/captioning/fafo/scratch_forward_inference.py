@@ -57,6 +57,7 @@ def compare_inference(experiment_id: str, split: str, count: int | None) -> Path
             print_example(row, ground_truths)
 
     print_summary(rows)
+    print_mismatches(rows)
 
     FAFO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     suffix = "full" if count is None else str(count)
@@ -95,6 +96,30 @@ def print_summary(rows: list[dict[str, object]]) -> None:
     print(f"Mean Keras METEOR: {mean(rows, 'keras_meteor'):.4f}")
     print(f"Mean Scratch BLEU-4: {mean(rows, 'scratch_bleu4'):.4f}")
     print(f"Mean Scratch METEOR: {mean(rows, 'scratch_meteor'):.4f}")
+
+
+def print_mismatches(rows: list[dict[str, object]]) -> None:
+    mismatches = [row for row in rows if not row["match"]]
+    if not mismatches:
+        print("\nNo Keras/scratch sentence mismatches found.")
+        return
+
+    print("\nKeras/scratch sentence mismatches")
+    for row in mismatches:
+        print(f"\nImage: {row['image_id']}")
+        print(f"Keras:   {row['keras_prediction']}")
+        print(f"Scratch: {row['scratch_prediction']}")
+        print(
+            f"Keras scores:   BLEU-4={float(row['keras_bleu4']):.4f}, "
+            f"METEOR={float(row['keras_meteor']):.4f}"
+        )
+        print(
+            f"Scratch scores: BLEU-4={float(row['scratch_bleu4']):.4f}, "
+            f"METEOR={float(row['scratch_meteor']):.4f}"
+        )
+        print("Ground truth:")
+        for caption in str(row["ground_truths"]).split(" | "):
+            print(f"- {caption}")
 
 
 def mean(rows: list[dict[str, object]], key: str) -> float:
