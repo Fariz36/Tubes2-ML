@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tubes2-ml"
+version = "0.1.0"
+description = "Tugas Besar 2 IF3270 Pembelajaran Mesin"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
