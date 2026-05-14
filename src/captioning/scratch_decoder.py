@@ -35,6 +35,14 @@ class RecurrentWeights:
 
 
 @dataclass(frozen=True)
+class BeamCandidate:
+    tokens: np.ndarray
+    words: tuple[str, ...]
+    log_probability: float
+    ended: bool
+
+
+@dataclass(frozen=True)
 class ScratchDecoder:
     model_kind: str
     image_projection: DenseWeights
@@ -83,6 +91,67 @@ class ScratchDecoder:
                 tokens[step + 1] = next_idx
 
         return " ".join(generated) if generated else "<empty>"
+
+    def beam_search_decode(self, feature: np.ndarray, beam_width: int = 3) -> str:
+        if beam_width < 1:
+            raise ValueError("beam_width must be at least 1")
+
+        pad_idx = self.word_to_idx["<pad>"]
+        start_idx = self.word_to_idx["<start>"]
+        end_idx = self.word_to_idx["<end>"]
+        blocked_indices = {pad_idx, start_idx, self.word_to_idx.get("<unk>")}
+        tokens = np.full((self.max_steps,), pad_idx, dtype=np.int32)
+        tokens[0] = start_idx
+        candidates = [BeamCandidate(tokens=tokens, words=(), log_probability=0.0, ended=False)]
+
+        for step in range(self.max_steps):
+            expanded: list[BeamCandidate] = []
+            for candidate in candidates:
+                if candidate.ended:
+                    expanded.append(candidate)
+                    continue
+
+                probabilities = self.forward(feature, candidate.tokens)[step]
+                probabilities = probabilities.copy()
+                for blocked_idx in blocked_indices:
+                    if blocked_idx is not None:
+                        probabilities[int(blocked_idx)] = 0.0
+
+                top_indices = np.argsort(probabilities)[-beam_width:][::-1]
+                for next_idx in top_indices:
+                    next_idx = int(next_idx)
+                    next_probability = max(float(probabilities[next_idx]), 1e-12)
+                    next_tokens = candidate.tokens.copy()
+                    if step + 1 < self.max_steps:
+                        next_tokens[step + 1] = next_idx
+
+                    if next_idx == end_idx:
+                        expanded.append(
+                            BeamCandidate(
+                                tokens=next_tokens,
+                                words=candidate.words,
+                                log_probability=candidate.log_probability + float(np.log(next_probability)),
+                                ended=True,
+                            )
+                        )
+                        continue
+
+                    word = self.idx_to_word.get(str(next_idx), "<unk>")
+                    expanded.append(
+                        BeamCandidate(
+                            tokens=next_tokens,
+                            words=(*candidate.words, word),
+                            log_probability=candidate.log_probability + float(np.log(next_probability)),
+                            ended=False,
+                        )
+                    )
+
+            candidates = sorted(expanded, key=beam_candidate_score, reverse=True)[:beam_width]
+            if all(candidate.ended for candidate in candidates):
+                break
+
+        best = max(candidates, key=beam_candidate_score)
+        return " ".join(best.words) if best.words else "<empty>"
 
     def forward_batch(self, feature_batch: np.ndarray, tokens: np.ndarray) -> np.ndarray:
         projected_image = np.tanh(feature_batch @ self.image_projection.kernel + self.image_projection.bias)
@@ -142,6 +211,11 @@ def simple_rnn_forward(sequence: np.ndarray, weights: RecurrentWeights) -> np.nd
         hidden = np.tanh(timestep @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias)
         outputs.append(hidden)
     return np.stack(outputs, axis=0)
+
+
+def beam_candidate_score(candidate: BeamCandidate) -> float:
+    length = max(1, len(candidate.words))
+    return candidate.log_probability / length
 
 
 def simple_rnn_forward_batch(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
@@ -268,9 +342,21 @@ def load_feature_inputs(split: str) -> tuple[np.ndarray, dict[str, int], dict[st
     return features, image_id_to_index, captions
 
 
+def extract_feature_from_image(image_path: str | Path) -> np.ndarray:
+    from common.image_io import load_image
+    from captioning.extract_inception_features import build_encoder, inception_preprocess
+
+    image = load_image(image_path, target_size=(299, 299), normalize=False)
+    batch = inception_preprocess(image[None, ...])
+    encoder = build_encoder()
+    feature = encoder.predict(batch, verbose=0)[0]
+    return np.asarray(feature, dtype=np.float32)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run selected captioning decoders with NumPy scratch forward propagation.")
     parser.add_argument("--experiment-id", choices=sorted(SELECTED_EXPERIMENTS), default="lstm_layers1_hidden128")
+    parser.add_argument("--image", type=Path, help="Run end-to-end scratch inference from a raw image file.")
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--compare-keras", action="store_true", help="Print Keras and scratch greedy captions side by side.")
@@ -280,8 +366,23 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     decoder = load_scratch_decoder(args.experiment_id)
-    features, image_id_to_index, captions = load_feature_inputs(args.split)
     keras_model = load_keras_model(args.experiment_id) if args.compare_keras else None
+
+    if args.image is not None:
+        feature = extract_feature_from_image(args.image)
+        scratch_prediction = decoder.greedy_decode(feature)
+        print(f"Scratch raw-image greedy decoding: {args.experiment_id}")
+        print(f"Image: {args.image}")
+        if keras_model is not None:
+            keras_prediction = keras_greedy_decode(keras_model, feature, decoder)
+            print(f"Keras:   {keras_prediction}")
+            print(f"Scratch: {scratch_prediction}")
+            print(f"Match:   {keras_prediction == scratch_prediction}")
+        else:
+            print(f"Predicted: {scratch_prediction}")
+        return
+
+    features, image_id_to_index, captions = load_feature_inputs(args.split)
 
     mode = "Keras vs scratch greedy decoding" if args.compare_keras else "Scratch greedy decoding"
     print(f"{mode}: {args.experiment_id} ({args.split})")
