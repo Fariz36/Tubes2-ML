@@ -23,7 +23,7 @@ from captioning.fafo.training_results import (
 )
 
 
-def generate_qualitative_examples(
+def generate_examples(
     rnn_experiment_id: str,
     lstm_experiment_id: str,
     split: str,
@@ -39,7 +39,7 @@ def generate_qualitative_examples(
         raise ValueError(f"No images selected for split={split!r} and count={count!r}")
 
     rows = []
-    for start in tqdm(range(0, len(selected_image_ids), EVAL_BATCH_SIZE), desc="Generating qualitative rows", unit="batch"):
+    for start in tqdm(range(0, len(selected_image_ids), EVAL_BATCH_SIZE), desc="Generating rows", unit="batch"):
         batch_image_ids = selected_image_ids[start:start + EVAL_BATCH_SIZE]
         feature_indices = [image_id_to_index[image_id] for image_id in batch_image_ids]
         feature_batch = features[feature_indices]
@@ -68,13 +68,13 @@ def generate_qualitative_examples(
 
     examples = choose_examples(rows, output_count)
     FAFO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = FAFO_OUTPUT_DIR / "qualitative_20_examples.csv"
+    csv_path = FAFO_OUTPUT_DIR / "comparison_20_examples.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=list(examples[0]))
         writer.writeheader()
         writer.writerows(examples)
 
-    png_path = FAFO_OUTPUT_DIR / "qualitative_20_examples.png"
+    png_path = FAFO_OUTPUT_DIR / "comparison_20_examples.png"
     save_examples_plot(examples, png_path)
     print_summary(examples)
     return csv_path, png_path
@@ -145,14 +145,14 @@ def save_examples_plot(examples: list[dict[str, object]], output_path: Path) -> 
         )
         text_ax.text(0, 1, text, va="top", wrap=True, fontsize=9)
 
-    fig.suptitle("Qualitative RNN vs LSTM Caption Examples")
+    fig.suptitle("Comparing RNN vs LSTM Caption Examples")
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
 
 
 def print_summary(examples: list[dict[str, object]]) -> None:
-    print("\nQualitative examples")
+    print("\nComparison examples")
     print("bucket | image_id | mean BLEU-4 | RNN BLEU-4 | LSTM BLEU-4")
     print("-------+----------+-------------+------------+------------")
     for row in examples:
@@ -166,7 +166,7 @@ def print_summary(examples: list[dict[str, object]]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate high/medium/low qualitative RNN vs LSTM examples.")
+    parser = argparse.ArgumentParser(description="Generating Comparison for RNN vs LSTM examples.")
     parser.add_argument("--rnn-experiment-id", default="rnn_layers2_hidden128")
     parser.add_argument("--lstm-experiment-id", default="lstm_layers1_hidden128")
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
@@ -178,15 +178,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     count = None if args.count == 0 else args.count
-    csv_path, png_path = generate_qualitative_examples(
+    csv_path, png_path = generate_examples(
         rnn_experiment_id=args.rnn_experiment_id,
         lstm_experiment_id=args.lstm_experiment_id,
         split=args.split,
         count=count,
         output_count=args.output_count,
     )
-    print(f"Saved qualitative examples CSV: {csv_path}")
-    print(f"Saved qualitative examples plot: {png_path}")
+    print(f"Saved comparison examples CSV: {csv_path}")
+    print(f"Saved comparison examples plot: {png_path}")
 
 
 if __name__ == "__main__":
