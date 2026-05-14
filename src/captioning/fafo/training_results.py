@@ -52,13 +52,14 @@ def resolve_artifact_path(path_value: str | Path) -> Path:
     return path
 
 
-def load_summary() -> list[dict[str, object]]:
-    if not SUMMARY_PATH.exists():
-        raise FileNotFoundError(f"Training summary not found: {SUMMARY_PATH}")
+def load_summary(summary_path: str | Path = SUMMARY_PATH) -> list[dict[str, object]]:
+    path = Path(summary_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Training summary not found: {path}")
 
-    summary = load_json(SUMMARY_PATH)
+    summary = load_json(path)
     if not isinstance(summary, list):
-        raise ValueError(f"Expected list in {SUMMARY_PATH}")
+        raise ValueError(f"Expected list in {path}")
     return [dict(row) for row in summary]
 
 
@@ -134,11 +135,20 @@ def find_summary_row(summary: list[dict[str, object]], experiment_id: str) -> di
 
 
 def build_model_from_summary(row: dict[str, object]):
-    from captioning.decoder import build_lstm_decoder, build_simple_rnn_decoder
+    from captioning.decoder import (
+        build_init_inject_lstm_decoder,
+        build_init_inject_simple_rnn_decoder,
+        build_lstm_decoder,
+        build_simple_rnn_decoder,
+    )
 
     preprocessing = load_json(PREPROCESSED_DIR / "caption_preprocessing_metadata.json")
     teacher_forcing = load_json(TEACHER_FORCING_DIR / "teacher_forcing_metadata.json")
-    builder = build_simple_rnn_decoder if row["model_kind"] == "rnn" else build_lstm_decoder
+    is_init_inject = row.get("injection_method") == "init-inject" or str(row["experiment_id"]).startswith("initinject_")
+    if row["model_kind"] == "rnn":
+        builder = build_init_inject_simple_rnn_decoder if is_init_inject else build_simple_rnn_decoder
+    else:
+        builder = build_init_inject_lstm_decoder if is_init_inject else build_lstm_decoder
     return builder(
         vocab_size=int(preprocessing["vocab_size"]),
         decoder_timesteps=int(teacher_forcing["decoder_timesteps"]),
@@ -408,7 +418,12 @@ def print_evaluation_table(rows: list[dict[str, object]]) -> None:
         )
 
 
-def run_evaluation_table(summary: list[dict[str, object]], split: str, eval_count: int | None) -> Path:
+def run_evaluation_table(
+    summary: list[dict[str, object]],
+    split: str,
+    eval_count: int | None,
+    output_prefix: str = "",
+) -> Path:
     selected = sorted(summary, key=lambda row: float(row["final_val_loss"]))
     rows = []
     for row in tqdm(selected, desc="Evaluating models", unit="model"):
@@ -418,7 +433,7 @@ def run_evaluation_table(summary: list[dict[str, object]], split: str, eval_coun
 
     FAFO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     suffix = "full" if eval_count is None else str(eval_count)
-    output_path = FAFO_OUTPUT_DIR / f"{split}_evaluation_{suffix}_images.csv"
+    output_path = FAFO_OUTPUT_DIR / f"{output_prefix}{split}_evaluation_{suffix}_images.csv"
     with output_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -432,16 +447,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eval-table", action="store_true", help="Evaluate every trained model and save a BLEU-4/METEOR table.")
     parser.add_argument("--eval-count", type=int, help="Limit evaluation table to the first N images. Defaults to the full split.")
+    parser.add_argument("--summary-path", type=Path, default=SUMMARY_PATH, help="Training summary JSON to evaluate.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    summary = load_summary()
+    summary = load_summary(args.summary_path)
 
     print_training_summary(summary)
     if args.eval_table:
-        table_path = run_evaluation_table(summary, "test", args.eval_count)
+        output_prefix = "" if args.summary_path == SUMMARY_PATH else f"{args.summary_path.stem.replace('_decoder_training_summary', '')}_"
+        table_path = run_evaluation_table(summary, "test", args.eval_count, output_prefix=output_prefix)
         print(f"Saved evaluation table: {table_path}")
 
 
