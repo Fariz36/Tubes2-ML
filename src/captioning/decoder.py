@@ -95,6 +95,54 @@ def build_lstm_decoder(
     return model
 
 
+def build_init_inject_simple_rnn_decoder(
+    vocab_size: int,
+    decoder_timesteps: int,
+    pad_idx: int,
+    feature_dim: int = DEFAULT_FEATURE_DIM,
+    embed_dim: int = 256,
+    hidden_units: int | Sequence[int] = 256,
+    learning_rate: float = 1e-3,
+    compile_model: bool = True,
+) -> keras.Model:
+    model = _build_init_inject_decoder(
+        recurrent_layer=layers.SimpleRNN,
+        recurrent_name="simple_rnn",
+        vocab_size=vocab_size,
+        decoder_timesteps=decoder_timesteps,
+        feature_dim=feature_dim,
+        embed_dim=embed_dim,
+        hidden_units=hidden_units,
+    )
+    if compile_model:
+        compile_caption_decoder(model, pad_idx=pad_idx, learning_rate=learning_rate)
+    return model
+
+
+def build_init_inject_lstm_decoder(
+    vocab_size: int,
+    decoder_timesteps: int,
+    pad_idx: int,
+    feature_dim: int = DEFAULT_FEATURE_DIM,
+    embed_dim: int = 256,
+    hidden_units: int | Sequence[int] = 256,
+    learning_rate: float = 1e-3,
+    compile_model: bool = True,
+) -> keras.Model:
+    model = _build_init_inject_decoder(
+        recurrent_layer=layers.LSTM,
+        recurrent_name="lstm",
+        vocab_size=vocab_size,
+        decoder_timesteps=decoder_timesteps,
+        feature_dim=feature_dim,
+        embed_dim=embed_dim,
+        hidden_units=hidden_units,
+    )
+    if compile_model:
+        compile_caption_decoder(model, pad_idx=pad_idx, learning_rate=learning_rate)
+    return model
+
+
 def _build_preinject_decoder(
     recurrent_layer: type[layers.Layer],
     recurrent_name: str,
@@ -156,6 +204,68 @@ def _build_preinject_decoder(
         inputs=[image_features, caption_tokens],
         outputs=token_distribution,
         name=f"preinject_{recurrent_name}_decoder",
+    )
+
+
+def _build_init_inject_decoder(
+    recurrent_layer: type[layers.Layer],
+    recurrent_name: str,
+    vocab_size: int,
+    decoder_timesteps: int,
+    feature_dim: int,
+    embed_dim: int,
+    hidden_units: int | Sequence[int],
+) -> keras.Model:
+    units_per_layer = _normalize_hidden_units(hidden_units)
+
+    image_features = keras.Input(
+        shape=(feature_dim,),
+        name="image_features",
+    )
+    caption_tokens = keras.Input(
+        shape=(decoder_timesteps,),
+        dtype="int32",
+        name="caption_tokens",
+    )
+
+    x = layers.Embedding(
+        vocab_size,
+        embed_dim,
+        mask_zero=False,
+        name="token_embedding",
+    )(caption_tokens)
+
+    for layer_index, units in enumerate(units_per_layer, start=1):
+        initial_hidden = layers.Dense(
+            units,
+            activation="tanh",
+            name=f"image_to_h{layer_index}",
+        )(image_features)
+        initial_state = [initial_hidden]
+        if recurrent_layer is layers.LSTM:
+            initial_cell = layers.Dense(
+                units,
+                activation="tanh",
+                name=f"image_to_c{layer_index}",
+            )(image_features)
+            initial_state.append(initial_cell)
+
+        x = recurrent_layer(
+            units,
+            return_sequences=True,
+            name=f"{recurrent_name}_{layer_index}",
+        )(x, initial_state=initial_state)
+
+    token_distribution = layers.Dense(
+        vocab_size,
+        activation="softmax",
+        name="token_distribution",
+    )(x)
+
+    return keras.Model(
+        inputs=[image_features, caption_tokens],
+        outputs=token_distribution,
+        name=f"initinject_{recurrent_name}_decoder",
     )
 
 
