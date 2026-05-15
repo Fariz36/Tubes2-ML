@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import time
 from pathlib import Path
 
 import numpy as np
@@ -25,10 +26,13 @@ def compare_inference(experiment_id: str, split: str, count: int | None) -> Path
         raise ValueError(f"No images selected for split={split!r} and count={count!r}")
 
     rows = []
+    keras_seconds = 0.0
+    scratch_seconds = 0.0
     for start in tqdm(range(0, len(selected_image_ids), EVAL_BATCH_SIZE), desc=f"Comparing {experiment_id}", unit="batch"):
         batch_image_ids = selected_image_ids[start:start + EVAL_BATCH_SIZE]
         feature_indices = [image_id_to_index[image_id] for image_id in batch_image_ids]
         feature_batch = features[feature_indices]
+        started_at = time.perf_counter()
         keras_predictions = greedy_decode_batch(
             keras_model,
             feature_batch,
@@ -36,7 +40,10 @@ def compare_inference(experiment_id: str, split: str, count: int | None) -> Path
             scratch_decoder.idx_to_word,
             scratch_decoder.max_steps,
         )
+        keras_seconds += time.perf_counter() - started_at
+        started_at = time.perf_counter()
         scratch_predictions = scratch_decoder.greedy_decode_batch(feature_batch)
+        scratch_seconds += time.perf_counter() - started_at
 
         for image_id, keras_prediction, scratch_prediction in zip(batch_image_ids, keras_predictions, scratch_predictions, strict=True):
             ground_truths = [str(caption) for caption in captions[image_id]]
@@ -57,7 +64,17 @@ def compare_inference(experiment_id: str, split: str, count: int | None) -> Path
             rows.append(row)
             print_example(row, ground_truths)
 
-    print_summary(rows)
+    timing = {
+        "keras_inference_seconds": keras_seconds,
+        "scratch_inference_seconds": scratch_seconds,
+        "keras_seconds_per_image": keras_seconds / len(selected_image_ids),
+        "scratch_seconds_per_image": scratch_seconds / len(selected_image_ids),
+    }
+
+    for row in rows:
+        row.update(timing)
+
+    print_summary(rows, timing)
     print_mismatches(rows, features, image_id_to_index, keras_model, scratch_decoder)
 
     FAFO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -88,7 +105,7 @@ def print_example(row: dict[str, object], ground_truths: list[str]) -> None:
         print(f"- {caption}")
 
 
-def print_summary(rows: list[dict[str, object]]) -> None:
+def print_summary(rows: list[dict[str, object]], timing: dict[str, float]) -> None:
     match_count = sum(1 for row in rows if row["match"])
     print("\nKeras vs scratch inference summary")
     print(f"Images: {len(rows)}")
@@ -97,6 +114,14 @@ def print_summary(rows: list[dict[str, object]]) -> None:
     print(f"Mean Keras METEOR: {mean(rows, 'keras_meteor'):.4f}")
     print(f"Mean Scratch BLEU-4: {mean(rows, 'scratch_bleu4'):.4f}")
     print(f"Mean Scratch METEOR: {mean(rows, 'scratch_meteor'):.4f}")
+    print(
+        f"Keras inference time: {timing['keras_inference_seconds']:.3f}s "
+        f"({timing['keras_seconds_per_image']:.6f} sec/img)"
+    )
+    print(
+        f"Scratch inference time: {timing['scratch_inference_seconds']:.3f}s "
+        f"({timing['scratch_seconds_per_image']:.6f} sec/img)"
+    )
 
 
 def print_mismatches(rows: list[dict[str, object]], features, image_id_to_index, keras_model, scratch_decoder) -> None:
