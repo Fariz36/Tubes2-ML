@@ -3,7 +3,7 @@
 Repository ini berisi implementasi Tugas Besar 2 IF3270 Pembelajaran Mesin untuk dua bagian utama:
 
 - CNN untuk klasifikasi gambar Intel Image Classification.
-- SimpleRNN dan LSTM untuk image captioning Flickr8k.
+- RNN dan LSTM untuk image captioning Flickr8k.
 
 Implementasi reusable berada di `src/`, sedangkan notebook digunakan untuk training, pengujian, visualisasi, dan analisis hasil.
 
@@ -26,14 +26,6 @@ Gunakan Python `>=3.11`, lalu jalankan dari root repository:
 ```powershell
 pip install -r requirements.txt
 pip install -e .
-```
-
-Perintah pertama memasang dependency utama seperti TensorFlow/Keras, NumPy, Pillow, scikit-learn, matplotlib, NLTK, pandas, dan tqdm. Perintah kedua memasang repository dalam editable mode agar module di `src/` dapat dijalankan dengan `python -m ...`.
-
-Verifikasi ringan setelah setup atau perubahan source code:
-
-```powershell
-python -m compileall src
 ```
 
 ## Dataset Layout
@@ -104,12 +96,12 @@ python -m captioning.fafo.comparison_examples --rnn-experiment-id rnn_layers2_hi
 
 Output utama dari pipeline disimpan di `artifacts/captioning/`, termasuk feature InceptionV3, vocabulary, teacher-forcing arrays, weights decoder, history training, tabel evaluasi, dan hasil perbandingan Keras vs scratch.
 
-## Notebook Analisis
+## Notebook Experiment
 
-Notebook analisis utama untuk bagian captioning:
+Notebook analisis utama dan experiment untuk bagian captioning rnn dan lstm:
 
 ```text
-notebook/rnn_lstm_captioning_final_report.ipynb
+notebook/rnn_lstm_captioning_experiment.ipynb
 ```
 
 Notebook tersebut membaca artifact yang sudah ada dan menyajikan:
