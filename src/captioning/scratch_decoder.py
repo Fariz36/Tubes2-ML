@@ -5,8 +5,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import h5py
 import numpy as np
+
+try:
+    import h5py
+except ModuleNotFoundError:
+    h5py = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +22,15 @@ SPLITS_DIR = REPO_ROOT / "artifacts" / "captioning" / "splits"
 TEACHER_FORCING_DIR = REPO_ROOT / "artifacts" / "captioning" / "teacher_forcing"
 
 FEATURE_BASENAME = "inception_v3_flickr8k"
-SELECTED_EXPERIMENTS = {"lstm_layers1_hidden128", "rnn_layers2_hidden128"}
+PREINJECT_EXPERIMENTS = tuple(
+    f"{model_kind}_layers{recurrent_layers}_hidden{hidden_units}"
+    for model_kind in ("rnn", "lstm")
+    for recurrent_layers in (1, 2, 3)
+    for hidden_units in (128, 512)
+)
+SELECTED_EXPERIMENTS = set(PREINJECT_EXPERIMENTS)
+PREDICT_MODE = "predict"
+SCRATCH_MODES = (PREDICT_MODE, "evaluate", "backward", "train-batch", "fit")
 
 
 @dataclass(frozen=True)
@@ -54,226 +66,72 @@ class ScratchDecoder:
     max_steps: int
 
     def forward(self, feature: np.ndarray, tokens: np.ndarray) -> np.ndarray:
-        projected_image = np.tanh(feature @ self.image_projection.kernel + self.image_projection.bias)
-        token_embeddings = self.token_embedding[tokens]
-        x = np.concatenate([projected_image[None, :], token_embeddings], axis=0)
+        from captioning.scratch_forward import decoder_forward
 
-        for weights in self.recurrent_layers:
-            if self.model_kind == "rnn":
-                x = simple_rnn_forward(x, weights)
-            elif self.model_kind == "lstm":
-                x = lstm_forward(x, weights)
-            else:
-                raise ValueError(f"Unsupported model_kind: {self.model_kind}")
-
-        caption_steps = x[1:, :]
-        logits = caption_steps @ self.token_distribution.kernel + self.token_distribution.bias
-        return softmax(logits)
+        return decoder_forward(self, feature, tokens)
 
     def greedy_decode(self, feature: np.ndarray) -> str:
-        pad_idx = self.word_to_idx["<pad>"]
-        start_idx = self.word_to_idx["<start>"]
-        end_idx = self.word_to_idx["<end>"]
-        tokens = np.full((self.max_steps,), pad_idx, dtype=np.int32)
-        tokens[0] = start_idx
-        generated: list[str] = []
+        from captioning.scratch_forward import greedy_decode
 
-        for step in range(self.max_steps):
-            predictions = self.forward(feature, tokens)
-            next_idx = int(np.argmax(predictions[step]))
-            if next_idx == end_idx:
-                break
-
-            word = self.idx_to_word.get(str(next_idx), "<unk>")
-            if word not in {"<pad>", "<start>", "<unk>"}:
-                generated.append(word)
-            if step + 1 < self.max_steps:
-                tokens[step + 1] = next_idx
-
-        return " ".join(generated) if generated else "<empty>"
+        return greedy_decode(self, feature)
 
     def beam_search_decode(self, feature: np.ndarray, beam_width: int = 3) -> str:
-        if beam_width < 1:
-            raise ValueError("beam_width must be at least 1")
+        from captioning.scratch_forward import beam_search_decode
 
-        pad_idx = self.word_to_idx["<pad>"]
-        start_idx = self.word_to_idx["<start>"]
-        end_idx = self.word_to_idx["<end>"]
-        blocked_indices = {pad_idx, start_idx, self.word_to_idx.get("<unk>")}
-        tokens = np.full((self.max_steps,), pad_idx, dtype=np.int32)
-        tokens[0] = start_idx
-        candidates = [BeamCandidate(tokens=tokens, words=(), log_probability=0.0, ended=False)]
-
-        for step in range(self.max_steps):
-            expanded: list[BeamCandidate] = []
-            for candidate in candidates:
-                if candidate.ended:
-                    expanded.append(candidate)
-                    continue
-
-                probabilities = self.forward(feature, candidate.tokens)[step]
-                probabilities = probabilities.copy()
-                for blocked_idx in blocked_indices:
-                    if blocked_idx is not None:
-                        probabilities[int(blocked_idx)] = 0.0
-
-                top_indices = np.argsort(probabilities)[-beam_width:][::-1]
-                for next_idx in top_indices:
-                    next_idx = int(next_idx)
-                    next_probability = max(float(probabilities[next_idx]), 1e-12)
-                    next_tokens = candidate.tokens.copy()
-                    if step + 1 < self.max_steps:
-                        next_tokens[step + 1] = next_idx
-
-                    if next_idx == end_idx:
-                        expanded.append(
-                            BeamCandidate(
-                                tokens=next_tokens,
-                                words=candidate.words,
-                                log_probability=candidate.log_probability + float(np.log(next_probability)),
-                                ended=True,
-                            )
-                        )
-                        continue
-
-                    word = self.idx_to_word.get(str(next_idx), "<unk>")
-                    expanded.append(
-                        BeamCandidate(
-                            tokens=next_tokens,
-                            words=(*candidate.words, word),
-                            log_probability=candidate.log_probability + float(np.log(next_probability)),
-                            ended=False,
-                        )
-                    )
-
-            candidates = sorted(expanded, key=beam_candidate_score, reverse=True)[:beam_width]
-            if all(candidate.ended for candidate in candidates):
-                break
-
-        best = max(candidates, key=beam_candidate_score)
-        return " ".join(best.words) if best.words else "<empty>"
+        return beam_search_decode(self, feature, beam_width)
 
     def forward_batch(self, feature_batch: np.ndarray, tokens: np.ndarray) -> np.ndarray:
-        projected_image = np.tanh(feature_batch @ self.image_projection.kernel + self.image_projection.bias)
-        token_embeddings = self.token_embedding[tokens]
-        x = np.concatenate([projected_image[:, None, :], token_embeddings], axis=1)
+        from captioning.scratch_forward import decoder_forward_batch
 
-        for weights in self.recurrent_layers:
-            if self.model_kind == "rnn":
-                x = simple_rnn_forward_batch(x, weights)
-            elif self.model_kind == "lstm":
-                x = lstm_forward_batch(x, weights)
-            else:
-                raise ValueError(f"Unsupported model_kind: {self.model_kind}")
-
-        caption_steps = x[:, 1:, :]
-        logits = caption_steps @ self.token_distribution.kernel + self.token_distribution.bias
-        return softmax(logits)
+        return decoder_forward_batch(self, feature_batch, tokens)
 
     def greedy_decode_batch(self, feature_batch: np.ndarray) -> list[str]:
-        pad_idx = self.word_to_idx["<pad>"]
-        start_idx = self.word_to_idx["<start>"]
-        end_idx = self.word_to_idx["<end>"]
-        batch_size = feature_batch.shape[0]
-        tokens = np.full((batch_size, self.max_steps), pad_idx, dtype=np.int32)
-        tokens[:, 0] = start_idx
-        generated: list[list[str]] = [[] for _ in range(batch_size)]
-        finished = np.zeros((batch_size,), dtype=bool)
+        from captioning.scratch_forward import greedy_decode_batch
 
-        for step in range(self.max_steps):
-            predictions = self.forward_batch(feature_batch, tokens)
-            next_indices = np.argmax(predictions[:, step, :], axis=1).astype(np.int32)
+        return greedy_decode_batch(self, feature_batch)
 
-            for row_index, next_idx in enumerate(next_indices):
-                if finished[row_index]:
-                    continue
-                if next_idx == end_idx:
-                    finished[row_index] = True
-                    continue
+    def loss_and_gradients_batch(
+        self,
+        feature_batch: np.ndarray,
+        tokens: np.ndarray,
+        targets: np.ndarray,
+        pad_idx: int,
+    ):
+        from captioning.scratch_backprop import backward_batch
 
-                word = self.idx_to_word.get(str(int(next_idx)), "<unk>")
-                if word not in {"<pad>", "<start>", "<unk>"}:
-                    generated[row_index].append(word)
-                if step + 1 < self.max_steps:
-                    tokens[row_index, step + 1] = next_idx
+        return backward_batch(self, feature_batch, tokens, targets, pad_idx)
 
-            if finished.all():
-                break
+    def evaluate_batch(
+        self,
+        feature_batch: np.ndarray,
+        tokens: np.ndarray,
+        targets: np.ndarray,
+        pad_idx: int,
+    ) -> float:
+        from captioning.scratch_backprop import evaluate_batch
 
-        return [" ".join(words) if words else "<empty>" for words in generated]
+        return evaluate_batch(self, feature_batch, tokens, targets, pad_idx)
 
+    def backward_batch(
+        self,
+        feature_batch: np.ndarray,
+        tokens: np.ndarray,
+        targets: np.ndarray,
+        pad_idx: int,
+    ):
+        return self.loss_and_gradients_batch(feature_batch, tokens, targets, pad_idx)
 
-def simple_rnn_forward(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
-    hidden_units = weights.recurrent_kernel.shape[0]
-    hidden = np.zeros((hidden_units,), dtype=np.float32)
-    outputs = []
-    for timestep in sequence:
-        hidden = np.tanh(timestep @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias)
-        outputs.append(hidden)
-    return np.stack(outputs, axis=0)
+    def train_batch(
+        self,
+        feature_batch: np.ndarray,
+        tokens: np.ndarray,
+        targets: np.ndarray,
+        pad_idx: int,
+        learning_rate: float,
+    ):
+        from captioning.scratch_backprop import train_batch
 
-
-def beam_candidate_score(candidate: BeamCandidate) -> float:
-    length = max(1, len(candidate.words))
-    return candidate.log_probability / length
-
-
-def simple_rnn_forward_batch(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
-    batch_size = sequence.shape[0]
-    hidden_units = weights.recurrent_kernel.shape[0]
-    hidden = np.zeros((batch_size, hidden_units), dtype=np.float32)
-    outputs = []
-    for step in range(sequence.shape[1]):
-        hidden = np.tanh(sequence[:, step, :] @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias)
-        outputs.append(hidden)
-    return np.stack(outputs, axis=1)
-
-
-def lstm_forward(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
-    hidden_units = weights.recurrent_kernel.shape[0]
-    hidden = np.zeros((hidden_units,), dtype=np.float32)
-    cell = np.zeros((hidden_units,), dtype=np.float32)
-    outputs = []
-    for timestep in sequence:
-        gates = timestep @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias
-        input_gate, forget_gate, cell_candidate, output_gate = np.split(gates, 4)
-        input_gate = sigmoid(input_gate)
-        forget_gate = sigmoid(forget_gate)
-        cell_candidate = np.tanh(cell_candidate)
-        output_gate = sigmoid(output_gate)
-        cell = forget_gate * cell + input_gate * cell_candidate
-        hidden = output_gate * np.tanh(cell)
-        outputs.append(hidden)
-    return np.stack(outputs, axis=0)
-
-
-def lstm_forward_batch(sequence: np.ndarray, weights: RecurrentWeights) -> np.ndarray:
-    batch_size = sequence.shape[0]
-    hidden_units = weights.recurrent_kernel.shape[0]
-    hidden = np.zeros((batch_size, hidden_units), dtype=np.float32)
-    cell = np.zeros((batch_size, hidden_units), dtype=np.float32)
-    outputs = []
-    for step in range(sequence.shape[1]):
-        gates = sequence[:, step, :] @ weights.kernel + hidden @ weights.recurrent_kernel + weights.bias
-        input_gate, forget_gate, cell_candidate, output_gate = np.split(gates, 4, axis=1)
-        input_gate = sigmoid(input_gate)
-        forget_gate = sigmoid(forget_gate)
-        cell_candidate = np.tanh(cell_candidate)
-        output_gate = sigmoid(output_gate)
-        cell = forget_gate * cell + input_gate * cell_candidate
-        hidden = output_gate * np.tanh(cell)
-        outputs.append(hidden)
-    return np.stack(outputs, axis=1)
-
-
-def sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
-
-
-def softmax(x: np.ndarray) -> np.ndarray:
-    shifted = x - np.max(x, axis=-1, keepdims=True)
-    exp = np.exp(shifted)
-    return exp / np.sum(exp, axis=-1, keepdims=True)
+        return train_batch(self, feature_batch, tokens, targets, pad_idx, learning_rate)
 
 
 def load_json(path: Path):
@@ -290,8 +148,12 @@ def load_summary_row(experiment_id: str) -> dict[str, object]:
 
 
 def load_scratch_decoder(experiment_id: str) -> ScratchDecoder:
+    if h5py is None:
+        raise ModuleNotFoundError(
+            "h5py is required to load Keras .weights.h5 files. Install dependencies with: pip install -r requirements.txt"
+        )
     if experiment_id not in SELECTED_EXPERIMENTS:
-        raise ValueError(f"Scratch decoder is currently prepared for: {sorted(SELECTED_EXPERIMENTS)}")
+        raise ValueError(f"Scratch decoder supports pre-inject experiments only: {sorted(SELECTED_EXPERIMENTS)}")
 
     row = load_summary_row(experiment_id)
     weights_path = MODEL_DIR / f"{experiment_id}.weights.h5"
@@ -356,16 +218,27 @@ def extract_feature_from_image(image_path: str | Path) -> np.ndarray:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run selected captioning decoders with NumPy scratch forward propagation.")
     parser.add_argument("--experiment-id", choices=sorted(SELECTED_EXPERIMENTS), default="lstm_layers1_hidden128")
+    parser.add_argument("--mode", choices=SCRATCH_MODES, default=PREDICT_MODE)
     parser.add_argument("--image", type=Path, help="Run end-to-end scratch inference from a raw image file.")
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--compare-keras", action="store_true", help="Print Keras and scratch greedy captions side by side.")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size for evaluate/backward/train-batch/fit modes.")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="SGD learning rate for scratch training modes.")
+    parser.add_argument("--epochs", type=int, default=1, help="Epoch count for fit mode.")
+    parser.add_argument("--limit-samples", type=int, help="Limit sample count for fit mode.")
+    parser.add_argument("--save-updated-weights", type=Path, help="Save scratch-updated weights to this .npz path.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     decoder = load_scratch_decoder(args.experiment_id)
+
+    if args.mode != PREDICT_MODE:
+        run_training_style_mode(args, decoder)
+        return
+
     keras_model = load_keras_model(args.experiment_id) if args.compare_keras else None
 
     if args.image is not None:
@@ -400,6 +273,97 @@ def main() -> None:
         print("Ground truth:")
         for caption in captions[image_id]:
             print(f"- {caption}")
+
+
+def run_training_style_mode(args: argparse.Namespace, decoder: ScratchDecoder) -> None:
+    from captioning.scratch_backprop import (
+        default_scratch_weights_path,
+        fit_scratch,
+        load_teacher_forcing_batch,
+        save_scratch_weights,
+    )
+
+    if args.mode == "evaluate":
+        feature_batch, tokens, targets, pad_idx = load_teacher_forcing_batch(args.split, args.batch_size)
+        loss = decoder.evaluate_batch(feature_batch, tokens, targets, pad_idx)
+        print(f"Scratch evaluate: {args.experiment_id} ({args.split})")
+        print(f"Batch size: {len(feature_batch)}")
+        print(f"Loss: {loss:.6f}")
+        return
+
+    if args.mode == "backward":
+        feature_batch, tokens, targets, pad_idx = load_teacher_forcing_batch(args.split, args.batch_size)
+        loss, gradients = decoder.backward_batch(feature_batch, tokens, targets, pad_idx)
+        print(f"Scratch backward propagation: {args.experiment_id} ({args.split})")
+        print(f"Batch size: {len(feature_batch)}")
+        print(f"Loss: {loss:.6f}")
+        print_gradient_summary(gradients)
+        return
+
+    if args.mode == "train-batch":
+        feature_batch, tokens, targets, pad_idx = load_teacher_forcing_batch(args.split, args.batch_size)
+        before_loss = decoder.evaluate_batch(feature_batch, tokens, targets, pad_idx)
+        loss, updated_decoder, gradients = decoder.train_batch(
+            feature_batch,
+            tokens,
+            targets,
+            pad_idx,
+            args.learning_rate,
+        )
+        after_loss = updated_decoder.evaluate_batch(feature_batch, tokens, targets, pad_idx)
+        output_path = args.save_updated_weights or default_scratch_weights_path(args.experiment_id)
+        saved_path = save_scratch_weights(updated_decoder, output_path)
+        print(f"Scratch train-batch: {args.experiment_id} ({args.split})")
+        print(f"Batch size: {len(feature_batch)}")
+        print(f"Learning rate: {args.learning_rate}")
+        print(f"Loss before update: {before_loss:.6f}")
+        print(f"Backward loss: {loss:.6f}")
+        print(f"Loss after one SGD update on same batch: {after_loss:.6f}")
+        print_gradient_summary(gradients)
+        print(f"Saved scratch-updated weights: {saved_path}")
+        return
+
+    if args.mode == "fit":
+        updated_decoder, history = fit_scratch(
+            decoder=decoder,
+            split=args.split,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            learning_rate=args.learning_rate,
+            limit_samples=args.limit_samples,
+        )
+        output_path = args.save_updated_weights or default_scratch_weights_path(args.experiment_id)
+        saved_path = save_scratch_weights(updated_decoder, output_path)
+        print(f"Scratch fit: {args.experiment_id} ({args.split})")
+        print(f"Batch size: {args.batch_size}")
+        print(f"Epochs: {args.epochs}")
+        print(f"Learning rate: {args.learning_rate}")
+        if args.limit_samples is not None:
+            print(f"Limit samples: {args.limit_samples}")
+        if history:
+            print(f"Initial epoch loss: {history[0]['loss']:.6f}")
+            print(f"Final epoch loss: {history[-1]['loss']:.6f}")
+        print(f"Saved scratch-updated weights: {saved_path}")
+        return
+
+    raise ValueError(f"Unsupported mode: {args.mode}")
+
+
+def print_gradient_summary(gradients) -> None:
+    print("\nGradient shapes and L2 norms:")
+    print_array_summary("image_projection.kernel", gradients.image_projection.kernel)
+    print_array_summary("image_projection.bias", gradients.image_projection.bias)
+    print_array_summary("token_embedding", gradients.token_embedding)
+    for index, grad in enumerate(gradients.recurrent_layers):
+        print_array_summary(f"recurrent_layers.{index}.kernel", grad.kernel)
+        print_array_summary(f"recurrent_layers.{index}.recurrent_kernel", grad.recurrent_kernel)
+        print_array_summary(f"recurrent_layers.{index}.bias", grad.bias)
+    print_array_summary("token_distribution.kernel", gradients.token_distribution.kernel)
+    print_array_summary("token_distribution.bias", gradients.token_distribution.bias)
+
+
+def print_array_summary(name: str, array: np.ndarray) -> None:
+    print(f"{name}: shape={array.shape}, norm={np.linalg.norm(array):.6f}")
 
 
 def load_keras_model(experiment_id: str):
