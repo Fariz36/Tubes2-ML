@@ -181,3 +181,30 @@ Nama/NIM 1: CNN / RNN-LSTM / laporan / integrasi
 Nama/NIM 2: CNN / RNN-LSTM / laporan / integrasi
 Nama/NIM 3: CNN / RNN-LSTM / laporan / integrasi
 ```
+
+## Task List Spesifikasi Wajib
+
+| Task | Dikerjakan | Tidak dikerjakan |
+|---|---|---|
+| [CNN] Utility image processing dan feature extraction untuk dataset gambar | [x] | [ ] |
+| [CNN] Implementasi forward propagation CNN from scratch yang dapat load bobot Keras | [x] | [ ] |
+| [CNN] Training model CNN Keras untuk klasifikasi Intel Image Classification | [x] | [ ] |
+| [CNN] Eksperimen hyperparameter CNN sesuai spesifikasi: jumlah layer, jumlah filter, ukuran filter, dan jenis pooling | [x] | [ ] |
+| [CNN] Evaluasi dan analisis CNN: macro F1-score, Keras vs scratch, shared vs non-shared, grafik loss, dan jumlah parameter | [x] | [ ] |
+| [RNN/LSTM] Feature extraction Flickr8k dengan CNN encoder frozen dan preprocessing caption | [x] | [ ] |
+| [RNN/LSTM] Implementasi decoder Keras pre-inject untuk SimpleRNN dan LSTM | [x] | [ ] |
+| [RNN/LSTM] Training 12 variasi decoder: 6 SimpleRNN dan 6 LSTM | [x] | [ ] |
+| [RNN/LSTM] Implementasi forward propagation decoder from scratch untuk RNN dan LSTM | [x] | [ ] |
+| [RNN/LSTM] Pipeline image captioning from scratch dari raw image sampai caption | [x] | [ ] |
+| [RNN/LSTM] Evaluasi dan analisis RNN/LSTM: BLEU-4, METEOR, waktu eksekusi, Keras vs scratch, RNN vs LSTM, grafik loss, contoh kualitatif, dan panjang maksimum caption | [x] | [ ] |
+
+## Task List Spesifikasi Bonus
+
+| Task | Dikerjakan | Tidak dikerjakan |
+|---|---|---|
+| [CNN] Visualisasi intermediate feature maps dari layer konvolusi | [x] | [ ] |
+| [CNN] Grad-CAM untuk region gambar yang paling berpengaruh terhadap prediksi | [x] | [ ] |
+| [RNN/LSTM] Implementasi image captioning init-inject sebagai alternatif pre-inject dan membandingkan hasilnya| [x] | [ ] |
+| [RNN/LSTM] Implementasi beam search decoder dengan `k = 3` atau `k = 5` dan membandingkan hasilnya | [x] | [ ] |
+| [Semua] Batch inference untuk seluruh forward propagation from scratch dengan `batch_size` | [x] | [ ] |
+| [Semua] Backward propagation from scratch untuk seluruh layer yang digunakan | [ ] | [x] |
