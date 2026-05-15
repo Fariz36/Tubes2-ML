@@ -49,6 +49,18 @@ Output hasil preprocessing, feature extraction, model weights, history training,
 
 ## CNN Workflow
 
+Urutan utama untuk mereproduksi pipeline CNN dari artifact kosong:
+
+```powershell
+source .venv/bin/activate
+
+PYTHONUNBUFFERED=1 jupyter nbconvert --to notebook --execute --inplace notebook/cnn-train.ipynb 2>&1 | tee train.log
+
+PYTHONUNBUFFERED=1 jupyter nbconvert --to notebook --execute --inplace notebook/cnn-forward.ipynb 2>&1 | tee -a forward.log
+```
+
+Perintah di atas dijalankan dari root repository melalui WSL agar TensorFlow GPU dan environment `.venv` yang benar dapat digunakan.
+
 Notebook utama untuk bagian CNN:
 
 ```text
@@ -56,7 +68,7 @@ notebook/cnn-train.ipynb
 notebook/cnn-forward.ipynb
 ```
 
-Gunakan `cnn-train.ipynb` untuk training dan eksperimen model CNN. Gunakan `cnn-forward.ipynb` untuk pengujian forward propagation from scratch dan perbandingan hasil terhadap Keras.
+Gunakan `cnn-train.ipynb` untuk training dan eksperimen model CNN. Gunakan `cnn-forward.ipynb` untuk pengujian forward propagation from scratch, perbandingan hasil terhadap Keras, batch inference, feature maps, dan Grad-CAM.
 
 Implementasi CNN berada di:
 
@@ -65,7 +77,36 @@ src/cnn/core/       Abstraksi model dan operasi inti
 src/cnn/nn/         Layer, aktivasi, metric, dan adapter Keras
 src/cnn/data/       Dataset dan image loading helper
 src/cnn/training/   Helper training, eksperimen, dan serialization
+src/cnn/visualization.py
 ```
+
+Artifact utama untuk bagian CNN berada di:
+
+```text
+artifacts/cnn/shared/
+artifacts/cnn/non_shared/
+artifacts/cnn/reports/
+```
+
+Beberapa artifact penting yang digunakan notebook CNN:
+
+```text
+artifacts/cnn/reports/shared_results.csv
+artifacts/cnn/reports/non_shared_results.csv
+artifacts/cnn/reports/keras_vs_scratch_test.json
+artifacts/cnn/reports/shared_vs_non_shared_test.json
+artifacts/cnn/reports/visualizations/feature_maps.png
+artifacts/cnn/reports/visualizations/gradcam.png
+artifacts/cnn/reports/visualizations/gradcam_by_class.png
+```
+
+Notes:
+
+- Model shared disimpan sebagai `.keras`, `.weights.h5`, history JSON, dan summary JSON.
+- Model non-shared final disimpan sebagai sharded weights (`.weights.json` + shard `.weights.h5`) karena ukuran model sangat besar pada input `224x224`.
+- Validation split dibentuk dari `train` secara stratified jika folder validation terpisah tidak tersedia pada dataset lokal.
+- Notebook menggunakan artifact di `artifacts/cnn/`, sehingga eksekusi ulang tidak harus melatih seluruh model dari awal jika artifact sudah tersedia.
+- `train.log` dapat dipantau dengan `tail -f train.log` untuk melihat progress eksekusi notebook.
 
 ## RNN/LSTM Captioning Workflow
 
