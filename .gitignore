@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -60,4 +61,3 @@ artifacts/captioning/*
 # personal thingy
 .opencode*
 personal-doc*
-
